@@ -49,6 +49,9 @@ AUTO_SHUTDOWN_TIME="2300"
 TMP="$(mktemp -d)"
 LOG_FILE="$TMP/setup.log"
 
+# Always print log location on any failure so user knows where to look
+trap 'echo -e "\n\033[0;31m✗ Script failed. Full error log:\033[0m $LOG_FILE\n  Run: cat $LOG_FILE"; exit 1' ERR
+
 # ── Helper: run a bash script on a Linux VM ──────────────────────────────────
 vm_run() {
   local vm_name="$1"
@@ -172,39 +175,49 @@ az network nsg rule create --resource-group "$RG" --nsg-name "${PREFIX}-nsg" \
   --destination-port-ranges 3389 \
   --access Allow --direction Inbound --output none
 
-# ── 4 Virtual Machines (created in parallel with --no-wait) ─────────────────
+# ── 4 Virtual Machines — parallel via bash & (avoids --no-wait JSON bug) ─────
+# NOTE: We use bash background processes instead of --az --no-wait.
+#       --no-wait causes Azure CLI to crash with a JSON parse error on some
+#       subscriptions when Azure returns an immediate error response.
+#       With bash &, each az vm create waits for full provisioning internally
+#       and all four still run in parallel.
 log "Creating 4 VMs in parallel (this takes ~10 min)..."
+log "All VM output goes to: $LOG_FILE"
 
 az vm create \
   --resource-group "$RG" --name "${PREFIX}-vm1-backend" \
   --image Ubuntu2204 --size Standard_B2s \
   --admin-username "$VM_USER" --generate-ssh-keys \
   --nsg "${PREFIX}-nsg" --vnet-name "${PREFIX}-vnet" --subnet default \
-  --public-ip-sku Standard --output none --no-wait
+  --public-ip-sku Standard --output none >> "$LOG_FILE" 2>&1 &
+PID_VM1=$!
 
 az vm create \
   --resource-group "$RG" --name "${PREFIX}-vm2-nlp" \
   --image Ubuntu2204 --size Standard_B2ms \
   --admin-username "$VM_USER" --generate-ssh-keys \
   --nsg "${PREFIX}-nsg" --vnet-name "${PREFIX}-vnet" --subnet default \
-  --public-ip-sku Standard --output none --no-wait
+  --public-ip-sku Standard --output none >> "$LOG_FILE" 2>&1 &
+PID_VM2=$!
 
 az vm create \
   --resource-group "$RG" --name "${PREFIX}-vm3-frontend" \
   --image Ubuntu2204 --size Standard_B2s \
   --admin-username "$VM_USER" --generate-ssh-keys \
   --nsg "${PREFIX}-nsg" --vnet-name "${PREFIX}-vnet" --subnet default \
-  --public-ip-sku Standard --output none --no-wait
+  --public-ip-sku Standard --output none >> "$LOG_FILE" 2>&1 &
+PID_VM3=$!
 
 az vm create \
   --resource-group "$RG" --name "${PREFIX}-vm4-ad" \
   --image Win2022Datacenter --size Standard_B2ms \
   --admin-username "$VM_USER" --admin-password "$SQL_PASSWORD" \
   --nsg "${PREFIX}-nsg" --vnet-name "${PREFIX}-vnet" --subnet default \
-  --public-ip-sku Standard --output none --no-wait
+  --public-ip-sku Standard --output none >> "$LOG_FILE" 2>&1 &
+PID_VM4=$!
 
-# ── Azure SQL ─────────────────────────────────────────────────────────────────
-log "Creating Azure SQL Server + Database..."
+# ── While VMs are provisioning, create SQL + AI services in parallel ──────────
+log "Creating Azure SQL Server + Database (while VMs provision)..."
 az sql server create \
   --resource-group "$RG" --name "${PREFIX}-sql" \
   --location "$LOCATION" \
@@ -219,15 +232,15 @@ az sql server firewall-rule create \
 az sql db create \
   --resource-group "$RG" --server "${PREFIX}-sql" \
   --name ticketdb --edition Basic --capacity 5 --output none
+success "Azure SQL ready."
 
-# ── Azure Language Service ────────────────────────────────────────────────────
 log "Creating Azure Language Service..."
 az cognitiveservices account create \
   --resource-group "$RG" --name "${PREFIX}-language" \
   --kind TextAnalytics --sku S \
   --location "$LOCATION" --yes --output none
+success "Language Service ready."
 
-# ── Application Insights ──────────────────────────────────────────────────────
 log "Creating Log Analytics + Application Insights..."
 az monitor log-analytics workspace create \
   --resource-group "$RG" --workspace-name "${PREFIX}-logs" \
@@ -241,16 +254,15 @@ az monitor app-insights component create \
   --resource-group "$RG" --app "${PREFIX}-appinsights" \
   --location "$LOCATION" --kind web \
   --workspace "$WORKSPACE_ID" --output none
+success "Application Insights ready."
 
-# ── Wait for all VMs ──────────────────────────────────────────────────────────
-log "Waiting for all 4 VMs to reach running state..."
-for vm in vm1-backend vm2-nlp vm3-frontend vm4-ad; do
-  az vm wait \
-    --resource-group "$RG" --name "${PREFIX}-${vm}" \
-    --custom "instanceView.statuses[?code=='PowerState/running']" \
-    --output none
-  log "  ${PREFIX}-${vm} — ready"
-done
+# ── Wait for all 4 VMs to finish (they have been running in background) ───────
+log "Waiting for all 4 VMs to finish provisioning..."
+wait $PID_VM1 && success "VM1 backend created." || die "VM1 backend failed — run: cat $LOG_FILE"
+wait $PID_VM2 && success "VM2 nlp/ollama created." || die "VM2 nlp failed — run: cat $LOG_FILE"
+wait $PID_VM3 && success "VM3 frontend created." || die "VM3 frontend failed — run: cat $LOG_FILE"
+wait $PID_VM4 && success "VM4 AD (Windows) created." || die "VM4 AD failed — run: cat $LOG_FILE"
+
 success "All resources provisioned."
 
 # ════════════════════════════════════════════════════════════════════════════
