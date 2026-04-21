@@ -36,7 +36,7 @@ die()     { echo -e "${RED}✗   ERROR: $1${NC}"; exit 1; }
 # ════════════════════════════════════════════════════════════════════════════
 GITHUB_REPO="${GITHUB_REPO:-}"          # set via: export GITHUB_REPO=https://github.com/yourname/repo.git
 RG="smart-ticket-rg"
-LOCATION="eastus"
+LOCATION="eastus2"
 PREFIX="smartticket"
 VM_USER="azureuser"
 SQL_ADMIN="sqladmin"
