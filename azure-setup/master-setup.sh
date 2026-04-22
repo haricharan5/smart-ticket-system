@@ -35,8 +35,8 @@ die()     { echo -e "${RED}✗   ERROR: $1${NC}"; exit 1; }
 # CONFIGURATION  ← Only GITHUB_REPO needs to be set before running
 # ════════════════════════════════════════════════════════════════════════════
 GITHUB_REPO="${GITHUB_REPO:-}"          # set via: export GITHUB_REPO=https://github.com/yourname/repo.git
-RG="smart-ticket-rg"
-LOCATION="westus2"
+RG="MIT572-04"                          # existing class resource group on CSIS EA Subscription
+LOCATION="northcentralus"              # region where class resources already exist
 PREFIX="smartticket"
 VM_USER="azureuser"
 SQL_ADMIN="sqladmin"
@@ -96,6 +96,11 @@ print(out[-2000:] if len(out)>2000 else out)
 section "Phase 0: Pre-flight Checks"
 
 az account show > /dev/null 2>&1 || die "Not logged in to Azure. Run: az login"
+
+# Switch to the CSIS EA Subscription (university account with Contributor on MIT572-04)
+az account set --subscription "CSIS EA Subscription" 2>>"$LOG_FILE" || \
+  die "Could not switch to 'CSIS EA Subscription'. Run: az account list -o table"
+
 SUBSCRIPTION=$(az account show --query name -o tsv)
 log "Subscription : $SUBSCRIPTION"
 
@@ -146,8 +151,10 @@ echo -e "Full log: $LOG_FILE"
 # ════════════════════════════════════════════════════════════════════════════
 section "Phase 1: Provisioning Azure Resources (~15 min)"
 
-log "Creating resource group..."
-az group create --name "$RG" --location "$LOCATION" --output none
+log "Using existing resource group: $RG (class resource group on CSIS EA)..."
+az group show --name "$RG" --output none 2>>"$LOG_FILE" || \
+  die "Resource group $RG not found. Check you are on CSIS EA Subscription."
+success "Resource group $RG confirmed."
 
 # ── Virtual Network + NSG ────────────────────────────────────────────────────
 log "Creating VNet + NSG..."
