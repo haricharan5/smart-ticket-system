@@ -389,22 +389,33 @@ EOF
 mkdir -p /opt/ollama/models
 systemctl daemon-reload
 systemctl enable ollama
-systemctl restart ollama
+systemctl restart ollama 2>/dev/null || true
 
-echo "==> Waiting for Ollama API to become ready (up to 30 s)..."
-for i in \$(seq 1 15); do
+# systemctl may not propagate inside run-command — also start directly as fallback
+export HOME=/root
+export OLLAMA_HOST=0.0.0.0:11434
+export OLLAMA_MODELS=/opt/ollama/models
+
+echo "==> Waiting for Ollama API to become ready (up to 40 s)..."
+for i in \$(seq 1 20); do
   sleep 2
   if curl -sf http://localhost:11434/api/tags > /dev/null 2>&1; then
     echo "Ollama is running after \$((i*2))s."
     break
   fi
-  echo "  still starting... (\$i/15)"
+  # On iteration 5, try launching serve directly in background as fallback
+  if [ "\$i" -eq 5 ]; then
+    echo "  systemctl slow — starting ollama serve directly..."
+    nohup ollama serve > /var/log/ollama-serve.log 2>&1 &
+  fi
+  echo "  still starting... (\$i/20)"
 done
 
-# Verify the service is actually up before attempting pull
+# Final check
 curl -sf http://localhost:11434/api/tags > /dev/null 2>&1 || {
-  echo "Ollama not responding — checking service status:"
-  systemctl status ollama --no-pager | tail -10
+  echo "Ollama not responding after 40s — logs:"
+  cat /var/log/ollama-serve.log 2>/dev/null | tail -20
+  journalctl -u ollama --no-pager -n 20 2>/dev/null || true
   exit 1
 }
 
@@ -524,12 +535,13 @@ openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
   2>/dev/null
 echo "SSL certificate generated for IP $FRONTEND_IP"
 
-# Copy both cert files into the Docker build context before building
-mkdir -p /opt/smartticket/certs
-cp "\$CERT_DIR/smartticket.crt" /opt/smartticket/certs/
-cp "\$CERT_DIR/smartticket.key" /opt/smartticket/certs/
-echo "Cert files in build context:"
-ls -la /opt/smartticket/certs/
+# Copy certs into frontend/certs/ — the Docker build context is ./frontend,
+# so COPY ./certs/... resolves to frontend/certs/ relative to the repo root.
+mkdir -p /opt/smartticket/frontend/certs
+cp "\$CERT_DIR/smartticket.crt" /opt/smartticket/frontend/certs/
+cp "\$CERT_DIR/smartticket.key" /opt/smartticket/frontend/certs/
+echo "Cert files in build context (frontend/certs/):"
+ls -la /opt/smartticket/frontend/certs/
 
 cd /opt/smartticket
 docker build \
