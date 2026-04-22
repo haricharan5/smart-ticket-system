@@ -216,6 +216,7 @@ PID_VM3=$!
 
 az vm create \
   --resource-group "$RG" --name "${PREFIX}-vm4-ad" \
+  --computer-name "ticketAD" \
   --image "MicrosoftWindowsServer:WindowsServer:2022-Datacenter:latest" --size Standard_B2ms \
   --admin-username "$VM_USER" --admin-password "$SQL_PASSWORD" \
   --nsg "${PREFIX}-nsg" --vnet-name "${PREFIX}-vnet" --subnet default \
