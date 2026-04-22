@@ -114,7 +114,7 @@ JWT_SECRET=$(python3 -c "import secrets; print(secrets.token_hex(32))")
 log "JWT secret   : generated (${#JWT_SECRET} chars)"
 
 # ── Register all required resource providers ─────────────────────────────────
-log "Registering Azure resource providers (safe to run even if already done)..."
+log "Checking Azure resource providers (registration requires subscription-level access — skipping if not permitted)..."
 for NS in \
   Microsoft.Compute \
   Microsoft.Network \
@@ -125,21 +125,10 @@ for NS in \
   Microsoft.Insights \
   Microsoft.AlertsManagement; do
   az provider register --namespace "$NS" --output none 2>>"$LOG_FILE" && \
-    log "  Registered: $NS"
+    log "  Registered: $NS" || \
+    log "  $NS — already registered (or no subscription-level permission needed)"
 done
-
-log "Waiting 60 seconds for provider registration to complete..."
-sleep 60
-
-# Verify critical providers are registered
-for NS in Microsoft.Compute Microsoft.Network Microsoft.Sql; do
-  STATE=$(az provider show --namespace "$NS" --query "registrationState" -o tsv 2>/dev/null || echo "Unknown")
-  if [[ "$STATE" != "Registered" ]]; then
-    warn "$NS is '$STATE' — waiting extra 30 seconds..."
-    sleep 30
-  fi
-done
-success "Resource providers ready."
+success "Resource providers ready (EA subscription has providers pre-registered)."
 
 START_TIME=$(date +%s)
 echo ""
@@ -191,10 +180,20 @@ az network nsg rule create --resource-group "$RG" --nsg-name "${PREFIX}-nsg" \
 log "Creating 4 VMs in parallel (this takes ~10 min)..."
 log "All VM output goes to: $LOG_FILE"
 
+# Pre-generate SSH key once — avoids --generate-ssh-keys JSON parse bug in Azure CLI
+SSH_KEY_FILE="$HOME/.ssh/smartticket_rsa"
+if [[ ! -f "${SSH_KEY_FILE}.pub" ]]; then
+  ssh-keygen -t rsa -b 4096 -f "$SSH_KEY_FILE" -N "" -q
+  log "SSH key generated: ${SSH_KEY_FILE}.pub"
+else
+  log "SSH key already exists: ${SSH_KEY_FILE}.pub"
+fi
+SSH_PUB_KEY=$(cat "${SSH_KEY_FILE}.pub")
+
 az vm create \
   --resource-group "$RG" --name "${PREFIX}-vm1-backend" \
   --image Ubuntu2204 --size Standard_B2s \
-  --admin-username "$VM_USER" --generate-ssh-keys \
+  --admin-username "$VM_USER" --ssh-key-values "${SSH_KEY_FILE}.pub" \
   --nsg "${PREFIX}-nsg" --vnet-name "${PREFIX}-vnet" --subnet default \
   --public-ip-sku Standard --output none >> "$LOG_FILE" 2>&1 &
 PID_VM1=$!
@@ -202,7 +201,7 @@ PID_VM1=$!
 az vm create \
   --resource-group "$RG" --name "${PREFIX}-vm2-nlp" \
   --image Ubuntu2204 --size Standard_B2ms \
-  --admin-username "$VM_USER" --generate-ssh-keys \
+  --admin-username "$VM_USER" --ssh-key-values "${SSH_KEY_FILE}.pub" \
   --nsg "${PREFIX}-nsg" --vnet-name "${PREFIX}-vnet" --subnet default \
   --public-ip-sku Standard --output none >> "$LOG_FILE" 2>&1 &
 PID_VM2=$!
@@ -210,7 +209,7 @@ PID_VM2=$!
 az vm create \
   --resource-group "$RG" --name "${PREFIX}-vm3-frontend" \
   --image Ubuntu2204 --size Standard_B2s \
-  --admin-username "$VM_USER" --generate-ssh-keys \
+  --admin-username "$VM_USER" --ssh-key-values "${SSH_KEY_FILE}.pub" \
   --nsg "${PREFIX}-nsg" --vnet-name "${PREFIX}-vnet" --subnet default \
   --public-ip-sku Standard --output none >> "$LOG_FILE" 2>&1 &
 PID_VM3=$!
@@ -255,7 +254,7 @@ az monitor log-analytics workspace create \
 
 WORKSPACE_ID=$(az monitor log-analytics workspace show \
   --resource-group "$RG" --workspace-name "${PREFIX}-logs" \
-  --query customerId -o tsv)
+  --query id -o tsv)
 
 az monitor app-insights component create \
   --resource-group "$RG" --app "${PREFIX}-appinsights" \
