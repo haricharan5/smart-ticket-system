@@ -377,11 +377,13 @@ echo "==> Installing Ollama..."
 curl -fsSL https://ollama.ai/install.sh | sh
 
 # Listen on all interfaces so VM1 backend can reach it via private VNet
+# Also set HOME so the ollama CLI never panics with '$HOME is not defined'
 mkdir -p /etc/systemd/system/ollama.service.d
 cat > /etc/systemd/system/ollama.service.d/override.conf << 'EOF'
 [Service]
 Environment="OLLAMA_HOST=0.0.0.0:11434"
 Environment="OLLAMA_MODELS=/opt/ollama/models"
+Environment="HOME=/root"
 EOF
 
 mkdir -p /opt/ollama/models
@@ -389,17 +391,24 @@ systemctl daemon-reload
 systemctl enable ollama
 systemctl restart ollama
 
-echo "==> Waiting for Ollama to start..."
+echo "==> Waiting for Ollama API to become ready (up to 30 s)..."
 for i in \$(seq 1 15); do
   sleep 2
   if curl -sf http://localhost:11434/api/tags > /dev/null 2>&1; then
-    echo "Ollama is running."
+    echo "Ollama is running after \$((i*2))s."
     break
   fi
+  echo "  still starting... (\$i/15)"
 done
 
-echo "==> Pulling $LLM_MODEL (~2.3 GB download, takes 2-4 min)..."
-# HOME must be set — az vm run-command runs without it, which panics the ollama CLI
+# Verify the service is actually up before attempting pull
+curl -sf http://localhost:11434/api/tags > /dev/null 2>&1 || {
+  echo "Ollama not responding — checking service status:"
+  systemctl status ollama --no-pager | tail -10
+  exit 1
+}
+
+echo "==> Pulling $LLM_MODEL (~2.3 GB, takes 2-4 min)..."
 export HOME=/root
 export OLLAMA_MODELS=/opt/ollama/models
 ollama pull $LLM_MODEL
@@ -504,7 +513,7 @@ else
   git clone --quiet "$GITHUB_REPO" /opt/smartticket
 fi
 
-# Self-signed SSL certificate
+# Self-signed SSL certificate — always regenerate to ensure both .crt and .key exist
 CERT_DIR=/etc/ssl/smartticket
 mkdir -p "\$CERT_DIR"
 openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
@@ -515,9 +524,12 @@ openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
   2>/dev/null
 echo "SSL certificate generated for IP $FRONTEND_IP"
 
+# Copy both cert files into the Docker build context before building
 mkdir -p /opt/smartticket/certs
 cp "\$CERT_DIR/smartticket.crt" /opt/smartticket/certs/
 cp "\$CERT_DIR/smartticket.key" /opt/smartticket/certs/
+echo "Cert files in build context:"
+ls -la /opt/smartticket/certs/
 
 cd /opt/smartticket
 docker build \
