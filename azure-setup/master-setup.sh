@@ -192,7 +192,7 @@ SSH_PUB_KEY=$(cat "${SSH_KEY_FILE}.pub")
 
 az vm create \
   --resource-group "$RG" --name "${PREFIX}-vm1-backend" \
-  --image Ubuntu2204 --size Standard_B2s \
+  --image "Canonical:0001-com-ubuntu-server-jammy:22_04-lts:latest" --size Standard_B2s \
   --admin-username "$VM_USER" --ssh-key-values "${SSH_KEY_FILE}.pub" \
   --nsg "${PREFIX}-nsg" --vnet-name "${PREFIX}-vnet" --subnet default \
   --public-ip-sku Standard --output none >> "$LOG_FILE" 2>&1 &
@@ -200,7 +200,7 @@ PID_VM1=$!
 
 az vm create \
   --resource-group "$RG" --name "${PREFIX}-vm2-nlp" \
-  --image Ubuntu2204 --size Standard_B2ms \
+  --image "Canonical:0001-com-ubuntu-server-jammy:22_04-lts:latest" --size Standard_B2ms \
   --admin-username "$VM_USER" --ssh-key-values "${SSH_KEY_FILE}.pub" \
   --nsg "${PREFIX}-nsg" --vnet-name "${PREFIX}-vnet" --subnet default \
   --public-ip-sku Standard --output none >> "$LOG_FILE" 2>&1 &
@@ -208,7 +208,7 @@ PID_VM2=$!
 
 az vm create \
   --resource-group "$RG" --name "${PREFIX}-vm3-frontend" \
-  --image Ubuntu2204 --size Standard_B2s \
+  --image "Canonical:0001-com-ubuntu-server-jammy:22_04-lts:latest" --size Standard_B2s \
   --admin-username "$VM_USER" --ssh-key-values "${SSH_KEY_FILE}.pub" \
   --nsg "${PREFIX}-nsg" --vnet-name "${PREFIX}-vnet" --subnet default \
   --public-ip-sku Standard --output none >> "$LOG_FILE" 2>&1 &
@@ -216,7 +216,7 @@ PID_VM3=$!
 
 az vm create \
   --resource-group "$RG" --name "${PREFIX}-vm4-ad" \
-  --image Win2022Datacenter --size Standard_B2ms \
+  --image "MicrosoftWindowsServer:WindowsServer:2022-Datacenter:latest" --size Standard_B2ms \
   --admin-username "$VM_USER" --admin-password "$SQL_PASSWORD" \
   --nsg "${PREFIX}-nsg" --vnet-name "${PREFIX}-vnet" --subnet default \
   --public-ip-sku Standard --output none >> "$LOG_FILE" 2>&1 &
