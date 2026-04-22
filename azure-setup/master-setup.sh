@@ -145,42 +145,51 @@ az group show --name "$RG" --output none 2>>"$LOG_FILE" || \
   die "Resource group $RG not found. Check you are on CSIS EA Subscription."
 success "Resource group $RG confirmed."
 
-# ── Virtual Network + NSG ────────────────────────────────────────────────────
-log "Creating VNet + NSG..."
+# ── Virtual Network + NSG (idempotent — skipped if already exist) ─────────────
+log "Creating VNet + NSG (skipped if already exist)..."
 az network vnet create \
   --resource-group "$RG" --name "${PREFIX}-vnet" \
   --address-prefix 10.0.0.0/16 \
   --subnet-name default --subnet-prefix 10.0.0.0/24 \
-  --output none
+  --output none 2>>"$LOG_FILE" || log "  VNet already exists — continuing."
 
 az network nsg create \
-  --resource-group "$RG" --name "${PREFIX}-nsg" --output none
+  --resource-group "$RG" --name "${PREFIX}-nsg" \
+  --output none 2>>"$LOG_FILE" || log "  NSG already exists — continuing."
 
 az network nsg rule create --resource-group "$RG" --nsg-name "${PREFIX}-nsg" \
   --name AllowHTTP --priority 100 --protocol Tcp \
   --destination-port-ranges 80 443 8000 8443 \
-  --access Allow --direction Inbound --output none
+  --access Allow --direction Inbound --output none 2>>"$LOG_FILE" || true
 
 az network nsg rule create --resource-group "$RG" --nsg-name "${PREFIX}-nsg" \
   --name AllowSSH --priority 110 --protocol Tcp \
   --destination-port-ranges 22 \
-  --access Allow --direction Inbound --output none
+  --access Allow --direction Inbound --output none 2>>"$LOG_FILE" || true
 
 az network nsg rule create --resource-group "$RG" --nsg-name "${PREFIX}-nsg" \
   --name AllowRDP --priority 120 --protocol Tcp \
   --destination-port-ranges 3389 \
-  --access Allow --direction Inbound --output none
+  --access Allow --direction Inbound --output none 2>>"$LOG_FILE" || true
 
-# ── 4 Virtual Machines — parallel via bash & (avoids --no-wait JSON bug) ─────
-# NOTE: We use bash background processes instead of --az --no-wait.
-#       --no-wait causes Azure CLI to crash with a JSON parse error on some
-#       subscriptions when Azure returns an immediate error response.
-#       With bash &, each az vm create waits for full provisioning internally
-#       and all four still run in parallel.
-log "Creating 4 VMs in parallel (this takes ~10 min)..."
+# ── Helper: create a VM only if it does not already exist ────────────────────
+vm_create_or_skip() {
+  local vm_name="$1"; shift
+  if az vm show --resource-group "$RG" --name "$vm_name" \
+       --output none 2>/dev/null; then
+    log "  $vm_name already exists — skipping creation."
+  else
+    az vm create --resource-group "$RG" --name "$vm_name" "$@"
+  fi
+}
+
+# ── 4 Virtual Machines — parallel via bash & ─────────────────────────────────
+# Full image URNs are used instead of aliases (e.g. Ubuntu2204) because the
+# Azure CLI alias resolver downloads a CDN JSON file that can return malformed
+# content and crash with: JSONDecodeError: Extra data: line 1 column 4 (char 3)
+log "Creating 4 VMs in parallel (existing VMs are skipped, ~10 min)..."
 log "All VM output goes to: $LOG_FILE"
 
-# Pre-generate SSH key once — avoids --generate-ssh-keys JSON parse bug in Azure CLI
 SSH_KEY_FILE="$HOME/.ssh/smartticket_rsa"
 if [[ ! -f "${SSH_KEY_FILE}.pub" ]]; then
   ssh-keygen -t rsa -b 4096 -f "$SSH_KEY_FILE" -N "" -q
@@ -188,34 +197,29 @@ if [[ ! -f "${SSH_KEY_FILE}.pub" ]]; then
 else
   log "SSH key already exists: ${SSH_KEY_FILE}.pub"
 fi
-SSH_PUB_KEY=$(cat "${SSH_KEY_FILE}.pub")
 
-az vm create \
-  --resource-group "$RG" --name "${PREFIX}-vm1-backend" \
+vm_create_or_skip "${PREFIX}-vm1-backend" \
   --image "Canonical:0001-com-ubuntu-server-jammy:22_04-lts:latest" --size Standard_B2s \
   --admin-username "$VM_USER" --ssh-key-values "${SSH_KEY_FILE}.pub" \
   --nsg "${PREFIX}-nsg" --vnet-name "${PREFIX}-vnet" --subnet default \
   --public-ip-sku Standard --output none >> "$LOG_FILE" 2>&1 &
 PID_VM1=$!
 
-az vm create \
-  --resource-group "$RG" --name "${PREFIX}-vm2-nlp" \
+vm_create_or_skip "${PREFIX}-vm2-nlp" \
   --image "Canonical:0001-com-ubuntu-server-jammy:22_04-lts:latest" --size Standard_B2ms \
   --admin-username "$VM_USER" --ssh-key-values "${SSH_KEY_FILE}.pub" \
   --nsg "${PREFIX}-nsg" --vnet-name "${PREFIX}-vnet" --subnet default \
   --public-ip-sku Standard --output none >> "$LOG_FILE" 2>&1 &
 PID_VM2=$!
 
-az vm create \
-  --resource-group "$RG" --name "${PREFIX}-vm3-frontend" \
+vm_create_or_skip "${PREFIX}-vm3-frontend" \
   --image "Canonical:0001-com-ubuntu-server-jammy:22_04-lts:latest" --size Standard_B2s \
   --admin-username "$VM_USER" --ssh-key-values "${SSH_KEY_FILE}.pub" \
   --nsg "${PREFIX}-nsg" --vnet-name "${PREFIX}-vnet" --subnet default \
   --public-ip-sku Standard --output none >> "$LOG_FILE" 2>&1 &
 PID_VM3=$!
 
-az vm create \
-  --resource-group "$RG" --name "${PREFIX}-vm4-ad" \
+vm_create_or_skip "${PREFIX}-vm4-ad" \
   --computer-name "ticketAD" \
   --image "MicrosoftWindowsServer:WindowsServer:2022-Datacenter:latest" --size Standard_B2ms \
   --admin-username "$VM_USER" --admin-password "$SQL_PASSWORD" \
@@ -223,52 +227,68 @@ az vm create \
   --public-ip-sku Standard --output none >> "$LOG_FILE" 2>&1 &
 PID_VM4=$!
 
-# ── While VMs are provisioning, create SQL + AI services in parallel ──────────
-log "Creating Azure SQL Server + Database (while VMs provision)..."
-az sql server create \
-  --resource-group "$RG" --name "${PREFIX}-sql" \
-  --location "$LOCATION" \
-  --admin-user "$SQL_ADMIN" --admin-password "$SQL_PASSWORD" \
-  --output none
+# ── SQL + AI services (idempotent — skipped if already exist) ─────────────────
+log "Creating Azure SQL Server + Database (skipped if already exist)..."
+if az sql server show --resource-group "$RG" \
+     --name "${PREFIX}-sql" --output none 2>/dev/null; then
+  log "  SQL Server already exists — skipping creation."
+else
+  az sql server create \
+    --resource-group "$RG" --name "${PREFIX}-sql" \
+    --location "$LOCATION" \
+    --admin-user "$SQL_ADMIN" --admin-password "$SQL_PASSWORD" \
+    --output none
 
-az sql server firewall-rule create \
-  --resource-group "$RG" --server "${PREFIX}-sql" \
-  --name AllowAzureServices \
-  --start-ip-address 0.0.0.0 --end-ip-address 0.0.0.0 --output none
+  az sql server firewall-rule create \
+    --resource-group "$RG" --server "${PREFIX}-sql" \
+    --name AllowAzureServices \
+    --start-ip-address 0.0.0.0 --end-ip-address 0.0.0.0 --output none
 
-az sql db create \
-  --resource-group "$RG" --server "${PREFIX}-sql" \
-  --name ticketdb --edition Basic --capacity 5 --output none
+  az sql db create \
+    --resource-group "$RG" --server "${PREFIX}-sql" \
+    --name ticketdb --edition Basic --capacity 5 --output none
+fi
 success "Azure SQL ready."
 
-log "Creating Azure Language Service..."
-az cognitiveservices account create \
-  --resource-group "$RG" --name "${PREFIX}-language" \
-  --kind TextAnalytics --sku S \
-  --location "$LOCATION" --yes --output none
+log "Creating Azure Language Service (skipped if already exists)..."
+if az cognitiveservices account show --resource-group "$RG" \
+     --name "${PREFIX}-language" --output none 2>/dev/null; then
+  log "  Language Service already exists — skipping creation."
+else
+  az cognitiveservices account create \
+    --resource-group "$RG" --name "${PREFIX}-language" \
+    --kind TextAnalytics --sku S \
+    --location "$LOCATION" --yes --output none
+fi
 success "Language Service ready."
 
-log "Creating Log Analytics + Application Insights..."
-az monitor log-analytics workspace create \
-  --resource-group "$RG" --workspace-name "${PREFIX}-logs" \
-  --location "$LOCATION" --output none
+log "Creating Log Analytics + Application Insights (skipped if already exist)..."
+if ! az monitor log-analytics workspace show --resource-group "$RG" \
+       --workspace-name "${PREFIX}-logs" --output none 2>/dev/null; then
+  az monitor log-analytics workspace create \
+    --resource-group "$RG" --workspace-name "${PREFIX}-logs" \
+    --location "$LOCATION" --output none
+fi
 
 WORKSPACE_ID=$(az monitor log-analytics workspace show \
   --resource-group "$RG" --workspace-name "${PREFIX}-logs" \
   --query id -o tsv)
 
-az monitor app-insights component create \
-  --resource-group "$RG" --app "${PREFIX}-appinsights" \
-  --location "$LOCATION" --kind web \
-  --workspace "$WORKSPACE_ID" --output none
+if ! az monitor app-insights component show --resource-group "$RG" \
+       --app "${PREFIX}-appinsights" --output none 2>/dev/null; then
+  az monitor app-insights component create \
+    --resource-group "$RG" --app "${PREFIX}-appinsights" \
+    --location "$LOCATION" --kind web \
+    --workspace "$WORKSPACE_ID" --output none
+fi
 success "Application Insights ready."
 
-# ── Wait for all 4 VMs to finish (they have been running in background) ───────
+# ── Wait for all 4 VMs (existing VMs exit immediately with 0) ─────────────────
 log "Waiting for all 4 VMs to finish provisioning..."
-wait $PID_VM1 && success "VM1 backend created." || die "VM1 backend failed — run: cat $LOG_FILE"
-wait $PID_VM2 && success "VM2 nlp/ollama created." || die "VM2 nlp failed — run: cat $LOG_FILE"
-wait $PID_VM3 && success "VM3 frontend created." || die "VM3 frontend failed — run: cat $LOG_FILE"
-wait $PID_VM4 && success "VM4 AD (Windows) created." || die "VM4 AD failed — run: cat $LOG_FILE"
+wait $PID_VM1 && success "VM1 backend ready." || die "VM1 backend failed — run: cat $LOG_FILE"
+wait $PID_VM2 && success "VM2 nlp/ollama ready." || die "VM2 nlp failed — run: cat $LOG_FILE"
+wait $PID_VM3 && success "VM3 frontend ready." || die "VM3 frontend failed — run: cat $LOG_FILE"
+wait $PID_VM4 && success "VM4 AD (Windows) ready." || die "VM4 AD failed — run: cat $LOG_FILE"
 
 success "All resources provisioned."
 
