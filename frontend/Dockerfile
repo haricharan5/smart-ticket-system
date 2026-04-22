@@ -17,10 +17,10 @@ COPY --from=builder /app/dist /usr/share/nginx/html
 # Copy nginx config (HTTPS-enabled)
 COPY nginx.conf /etc/nginx/conf.d/default.conf
 
-# SSL cert directory — certs are mounted at runtime via volume or copied below
-ARG SSL_CERT_PATH=/certs
-COPY ${SSL_CERT_PATH}/smartticket.crt /etc/ssl/smartticket/smartticket.crt 2>/dev/null || true
-COPY ${SSL_CERT_PATH}/smartticket.key /etc/ssl/smartticket/smartticket.key 2>/dev/null || true
+# Copy SSL certs — generated at deploy time and placed in ./certs before docker build
+ARG SSL_CERT_PATH=./certs
+COPY ${SSL_CERT_PATH}/smartticket.crt /etc/ssl/smartticket/smartticket.crt
+COPY ${SSL_CERT_PATH}/smartticket.key /etc/ssl/smartticket/smartticket.key
 
 EXPOSE 80 443
 CMD ["nginx", "-g", "daemon off;"]

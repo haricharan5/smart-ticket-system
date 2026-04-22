@@ -399,13 +399,18 @@ for i in \$(seq 1 15); do
 done
 
 echo "==> Pulling $LLM_MODEL (~2.3 GB download, takes 2-4 min)..."
+# HOME must be set — az vm run-command runs without it, which panics the ollama CLI
+export HOME=/root
+export OLLAMA_MODELS=/opt/ollama/models
 ollama pull $LLM_MODEL
 
 echo "==> Loaded models:"
 ollama list
 
 echo "==> Quick inference test..."
-RESP=\$(ollama run $LLM_MODEL 'Reply with only valid JSON: {"ok": true}' 2>/dev/null || echo '{"ok": false}')
+RESP=\$(HOME=/root OLLAMA_MODELS=/opt/ollama/models \
+  ollama run $LLM_MODEL 'Reply with only valid JSON: {"ok": true}' 2>/dev/null \
+  || echo '{"ok": false}')
 echo "Test: \$RESP"
 echo "Ollama + $LLM_MODEL ready."
 SCRIPT
