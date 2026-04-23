@@ -21,7 +21,6 @@ def check_and_flag_outage(db: Session, category: str) -> bool:
         .filter(
             OutageFlag.category == category,
             OutageFlag.resolved == False,
-            OutageFlag.window_start >= window_start,
         )
         .first()
     )
