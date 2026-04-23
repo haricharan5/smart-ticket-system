@@ -38,6 +38,8 @@ export const api = {
       req(`/api/tickets/${id}/status`, { method: 'PATCH', body: JSON.stringify({ status }) }),
     overrideCategory: (id, category) =>
       req(`/api/tickets/${id}/category`, { method: 'PATCH', body: JSON.stringify({ category }) }),
+    updateReply: (id, reply) =>
+      req(`/api/tickets/${id}/reply`, { method: 'PATCH', body: JSON.stringify({ reply }) }),
   },
   alerts: {
     sla: () => req('/api/alerts/sla'),

@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { ArrowLeft, Bot, Edit2, Save } from 'lucide-react'
+import { ArrowLeft, Bot, Send, Save, CheckCircle2 } from 'lucide-react'
 import { format } from 'date-fns'
 import { api } from '../api/tickets'
 import { UrgencyBadge, CategoryBadge, StatusBadge, SentimentBadge } from '../components/Badges'
@@ -12,11 +12,19 @@ const STATUSES = ['open', 'in_progress', 'resolved']
 export default function TicketDetailPage() {
   const { id } = useParams()
   const navigate = useNavigate()
-  const [ticket, setTicket] = useState(null)
-  const [loading, setLoading] = useState(true)
+  const [ticket, setTicket]     = useState(null)
+  const [loading, setLoading]   = useState(true)
+  const [reply, setReply]       = useState('')
+  const [saving, setSaving]     = useState(false)
+  const [sending, setSending]   = useState(false)
+  const [replySent, setReplySent] = useState(false)
+  const [saveMsg, setSaveMsg]   = useState('')
 
   const load = () =>
-    api.tickets.get(id).then(setTicket).catch(() => {}).finally(() => setLoading(false))
+    api.tickets.get(id)
+      .then(t => { setTicket(t); setReply(t.ai_draft_reply || '') })
+      .catch(() => {})
+      .finally(() => setLoading(false))
 
   useEffect(() => { load() }, [id])
 
@@ -30,8 +38,44 @@ export default function TicketDetailPage() {
     setTicket(updated)
   }
 
+  const saveDraft = async () => {
+    if (!reply.trim()) return
+    setSaving(true)
+    try {
+      const updated = await api.tickets.updateReply(id, reply)
+      setTicket(updated)
+      setSaveMsg('Draft saved')
+      setTimeout(() => setSaveMsg(''), 2500)
+    } catch {
+      setSaveMsg('Save failed')
+      setTimeout(() => setSaveMsg(''), 2500)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const sendReply = async () => {
+    if (!reply.trim()) return
+    setSending(true)
+    try {
+      // Save the final reply text
+      await api.tickets.updateReply(id, reply)
+      // Move ticket to in_progress if still open
+      if (ticket.status === 'open') {
+        const updated = await api.tickets.updateStatus(id, 'in_progress')
+        setTicket(updated)
+      }
+      setReplySent(true)
+    } catch {
+      setSaveMsg('Send failed — try again')
+      setTimeout(() => setSaveMsg(''), 2500)
+    } finally {
+      setSending(false)
+    }
+  }
+
   if (loading) return <div className="text-gray-400 text-sm p-8">Loading...</div>
-  if (!ticket) return <div className="text-red-500 text-sm p-8">Ticket not found.</div>
+  if (!ticket)  return <div className="text-red-500 text-sm p-8">Ticket not found.</div>
 
   return (
     <div className="max-w-3xl">
@@ -42,6 +86,7 @@ export default function TicketDetailPage() {
         <ArrowLeft size={15} /> Back
       </button>
 
+      {/* Ticket Info */}
       <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6 mb-4">
         <div className="flex items-start justify-between gap-4 mb-4">
           <div>
@@ -55,8 +100,8 @@ export default function TicketDetailPage() {
         </div>
 
         <div className="flex flex-wrap gap-2 mb-5">
-          {ticket.category && <CategoryBadge category={ticket.category} />}
-          {ticket.urgency && <UrgencyBadge urgency={ticket.urgency} />}
+          {ticket.category  && <CategoryBadge  category={ticket.category}   />}
+          {ticket.urgency   && <UrgencyBadge   urgency={ticket.urgency}     />}
           {ticket.sentiment && <SentimentBadge sentiment={ticket.sentiment} />}
           <StatusBadge status={ticket.status} />
         </div>
@@ -65,7 +110,7 @@ export default function TicketDetailPage() {
           {ticket.description}
         </div>
 
-        <div className="flex flex-wrap gap-4 text-sm">
+        <div className="flex flex-wrap gap-6 text-sm">
           <div>
             <p className="text-xs text-gray-400 mb-1 uppercase tracking-wide">Assigned Team</p>
             <p className="font-medium text-gray-700">{ticket.team || '—'}</p>
@@ -85,22 +130,65 @@ export default function TicketDetailPage() {
         </div>
       </div>
 
-      {ticket.ai_draft_reply && (
-        <div className="bg-white rounded-xl shadow-sm border border-blue-100 p-6 mb-4">
-          <div className="flex items-center gap-2 mb-3">
-            <Bot size={16} className="text-blue-600" />
-            <h2 className="font-semibold text-gray-900 text-sm">AI Draft Reply</h2>
-            <span className="text-xs bg-blue-50 text-blue-600 px-2 py-0.5 rounded-full">Azure OpenAI</span>
-          </div>
-          <textarea
-            defaultValue={ticket.ai_draft_reply}
-            rows={5}
-            className="w-full text-sm text-gray-700 border border-gray-200 rounded-lg p-3 focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none"
-          />
-          <p className="text-xs text-gray-400 mt-2">Edit before sending. This draft was generated by GPT-4o-mini.</p>
+      {/* AI Draft Reply */}
+      <div className="bg-white rounded-xl shadow-sm border border-blue-100 p-6 mb-4">
+        <div className="flex items-center gap-2 mb-3">
+          <Bot size={16} className="text-blue-600" />
+          <h2 className="font-semibold text-gray-900 text-sm">AI Draft Reply</h2>
+          <span className="text-xs bg-blue-50 text-blue-600 px-2 py-0.5 rounded-full">phi3:mini · Ollama</span>
+          {replySent && (
+            <span className="ml-auto flex items-center gap-1 text-xs text-green-600 font-medium">
+              <CheckCircle2 size={13} /> Reply Sent
+            </span>
+          )}
         </div>
-      )}
 
+        {replySent ? (
+          <div className="bg-green-50 border border-green-200 rounded-lg p-4 text-sm text-green-800 leading-relaxed whitespace-pre-wrap">
+            {reply}
+          </div>
+        ) : (
+          <>
+            <textarea
+              value={reply}
+              onChange={(e) => setReply(e.target.value)}
+              rows={6}
+              placeholder="AI draft will appear here. You can edit it before sending."
+              className="w-full text-sm text-gray-700 border border-gray-200 rounded-lg p-3 focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none"
+            />
+            <div className="flex items-center justify-between mt-3">
+              <p className="text-xs text-gray-400">
+                Generated by phi3:mini via Ollama. Edit before sending.
+              </p>
+              <div className="flex items-center gap-2">
+                {saveMsg && (
+                  <span className={`text-xs font-medium ${saveMsg.includes('fail') ? 'text-red-500' : 'text-green-600'}`}>
+                    {saveMsg}
+                  </span>
+                )}
+                <button
+                  onClick={saveDraft}
+                  disabled={saving || !reply.trim()}
+                  className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg border border-gray-200 text-gray-600 hover:border-blue-400 hover:text-blue-600 disabled:opacity-50 transition-colors"
+                >
+                  <Save size={12} />
+                  {saving ? 'Saving…' : 'Save Draft'}
+                </button>
+                <button
+                  onClick={sendReply}
+                  disabled={sending || !reply.trim()}
+                  className="flex items-center gap-1.5 text-xs px-4 py-1.5 rounded-lg bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50 transition-colors"
+                >
+                  <Send size={12} />
+                  {sending ? 'Sending…' : 'Send Reply'}
+                </button>
+              </div>
+            </div>
+          </>
+        )}
+      </div>
+
+      {/* Actions */}
       <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
         <h2 className="font-semibold text-gray-900 text-sm mb-4">Actions</h2>
         <div className="grid grid-cols-2 gap-4">

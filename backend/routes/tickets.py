@@ -45,6 +45,10 @@ class TicketCategoryOverride(BaseModel):
     category: str
 
 
+class TicketReplyUpdate(BaseModel):
+    reply: str
+
+
 def serialize(ticket: Ticket) -> dict:
     sla_status = {}
     if ticket.sla_deadline and ticket.status != "resolved":
@@ -144,6 +148,22 @@ def update_status(
     ticket.status = body.status
     if body.status == "resolved":
         ticket.resolved_at = datetime.now(timezone.utc)
+    db.commit()
+    db.refresh(ticket)
+    return serialize(ticket)
+
+
+@router.patch("/{ticket_id}/reply")
+def update_reply(
+    ticket_id: int,
+    body: TicketReplyUpdate,
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    ticket = db.query(Ticket).filter(Ticket.id == ticket_id).first()
+    if not ticket:
+        raise HTTPException(status_code=404, detail="Ticket not found")
+    ticket.ai_draft_reply = body.reply
     db.commit()
     db.refresh(ticket)
     return serialize(ticket)
